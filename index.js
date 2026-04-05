@@ -14,6 +14,7 @@ const TEAM_SIZE = 5;
 const ATTENDANCE_CHANNEL = 'attendance';
 
 let scrimTime = null;
+let scrimTeam = null;
 let attendance = {};
 let scrimScheduled = false;
 
@@ -23,6 +24,7 @@ client.on('ready', () => {
   cron.schedule('0 0 * * *', () => {
     attendance = {};
     scrimTime = null;
+    scrimTeam = null;
     scrimScheduled = false;
     console.log('Attendance reset for the day');
 
@@ -50,7 +52,7 @@ client.on('messageCreate', async (message) => {
         },
         {
           name: '🔒 Admin Only',
-          value: '`!scrim <time>` — set scrim time. Example: `!scrim 8PM`\n`!cancel` — cancel tonight\'s scrim\n`!clear` — clear attendance list\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet'
+          value: '`!scrim <time> <team>` — set scrim time and team. Example: `!scrim 9:30PM Heiwa`\n`!cancel` — cancel tonight\'s scrim\n`!clear` — clear attendance list\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet'
         },
         {
           name: '⚙️ Auto Features',
@@ -86,6 +88,10 @@ client.on('messageCreate', async (message) => {
       .setTitle(`📋 Scrim Attendance${scrimTime ? ` — ${scrimTime}` : ''}`)
       .addFields(
         {
+          name: '🏷️ Team',
+          value: scrimTeam ? scrimTeam : 'Not set'
+        },
+        {
           name: `✅ Available (${available.length}/${TEAM_SIZE})`,
           value: available.length > 0 ? available.map(p => `• ${p.name}`).join('\n') : 'None yet'
         },
@@ -96,29 +102,34 @@ client.on('messageCreate', async (message) => {
       )
       .setTimestamp();
 
-    if (scrimTime) embed.setFooter({ text: `Scrim at ${scrimTime}` });
+    if (scrimTime) embed.setFooter({ text: `Scrim at ${scrimTime}${scrimTeam ? ` | ${scrimTeam}` : ''}` });
 
     await message.reply({ embeds: [embed] });
   }
 
-  // !scrim <time> — admin only
+  // !scrim <time> <team> — admin only
   else if (message.content.startsWith('!scrim')) {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('You need to be an admin to use this command!');
     }
 
-    const time = message.content.slice(7).trim().toUpperCase();
-    if (!time) return message.reply('Usage: `!scrim <time>` — example: `!scrim 8PM`');
+    const args = message.content.slice(7).trim().split(' ');
+    const time = args[0] ? args[0].toUpperCase() : null;
+    const team = args.slice(1).join(' ') || null;
+
+    if (!time) return message.reply('Usage: `!scrim <time> <team>` — example: `!scrim 9:30PM Heiwa`');
 
     if (!time.includes('AM') && !time.includes('PM')) {
-      return message.reply('❌ Invalid time format! Use AM/PM like `!scrim 8PM` or `!scrim 9:30PM`');
+      return message.reply('❌ Invalid time format! Use AM/PM like `!scrim 8PM Heiwa` or `!scrim 9:30PM Lumiere`');
     }
 
     scrimTime = time;
+    scrimTeam = team;
     scrimScheduled = false;
-    await message.reply(`✅ Scrim set for **${time} tonight!** Use \`!remind\` to notify players to mark attendance.`);
 
-    scheduleReminder(message, time);
+    await message.reply(`✅ Scrim set for **${time} tonight**${team ? ` for **${team}**` : ''}! Use \`!remind\` to notify players to mark attendance.`);
+
+    scheduleReminder(message, time, team);
   }
 
   // !cancel — admin only
@@ -127,6 +138,7 @@ client.on('messageCreate', async (message) => {
       return message.reply('You need to be an admin to use this command!');
     }
     scrimTime = null;
+    scrimTeam = null;
     scrimScheduled = false;
     attendance = {};
     await message.reply('❌ Tonight\'s scrim has been cancelled. Attendance has been cleared.');
@@ -140,6 +152,7 @@ client.on('messageCreate', async (message) => {
     }
     attendance = {};
     scrimTime = null;
+    scrimTeam = null;
     scrimScheduled = false;
     await message.reply('✅ Attendance has been cleared!');
   }
@@ -149,7 +162,7 @@ client.on('messageCreate', async (message) => {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('You need to be an admin to use this command!');
     }
-    await message.channel.send(`@everyone Please mark your attendance for tonight's scrim${scrimTime ? ` at **${scrimTime}**` : ''}! Type \`!available\` or \`!unavailable\``);
+    await message.channel.send(`@everyone Please mark your attendance for tonight's scrim${scrimTime ? ` at **${scrimTime}**` : ''}${scrimTeam ? ` for **${scrimTeam}**` : ''}! Type \`!available\` or \`!unavailable\``);
   }
 
   // !ping — admin only
@@ -172,7 +185,7 @@ client.on('messageCreate', async (message) => {
 async function checkFullAttendance(message) {
   const available = Object.values(attendance).filter(p => p.status === 'available');
   if (available.length >= TEAM_SIZE) {
-    await message.channel.send(`🎮 All ${TEAM_SIZE} players are available! **Scrim is on${scrimTime ? ` at ${scrimTime}` : ' tonight'}!** Let's go! 🔥`);
+    await message.channel.send(`🎮 All ${TEAM_SIZE} players are available! **Scrim is on${scrimTime ? ` at ${scrimTime}` : ' tonight'}**${scrimTeam ? ` for **${scrimTeam}**` : ''}! Let's go! 🔥`);
   }
 }
 
@@ -198,14 +211,13 @@ function parseHour(time) {
   }
 }
 
-function scheduleReminder(message, time) {
+function scheduleReminder(message, time, team) {
   try {
     const parsed = parseHour(time);
     if (!parsed || scrimScheduled) return;
 
     const { hour, minute } = parsed;
 
-    // 3 minutes before
     let reminderMin = minute - 3;
     let reminderHour = hour;
     if (reminderMin < 0) {
@@ -213,28 +225,28 @@ function scheduleReminder(message, time) {
       reminderHour -= 1;
     }
 
-    // ping 3 mins before
+    // 3 mins before
     cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
       client.guilds.cache.forEach(async guild => {
         const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
         if (channel) {
-          channel.send(`⏰ @everyone **3 minutes until scrim at ${time}!** Get ready! 🎮`);
+          channel.send(`⏰ @everyone **3 minutes until scrim!**${team ? ` **${team}** get ready!` : ' Get ready!'} 🎮`);
         }
       });
     });
 
-    // ping at scrim time
+    // at scrim time
     cron.schedule(`${minute} ${hour} * * *`, async () => {
       client.guilds.cache.forEach(async guild => {
         const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
         if (channel) {
-          channel.send(`🎮 @everyone **Scrim is starting NOW!** GL HF! 🔥`);
+          channel.send(`🎮 @everyone${team ? ` **${team}** scrim is starting NOW!` : ' Scrim is starting NOW!'} GL! 🔥`);
         }
       });
     });
 
     scrimScheduled = true;
-    console.log(`Scrim reminders scheduled for ${time}`);
+    console.log(`Scrim reminders scheduled for ${time}${team ? ` - ${team}` : ''}`);
   } catch (e) {
     console.log('Could not schedule reminder:', e);
   }
