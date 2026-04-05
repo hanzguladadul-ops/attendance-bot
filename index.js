@@ -20,7 +20,6 @@ let scrimScheduled = false;
 client.on('ready', () => {
   console.log('AttendanceBot is online!');
 
-  // auto reset at midnight
   cron.schedule('0 0 * * *', () => {
     attendance = {};
     scrimTime = null;
@@ -39,8 +38,33 @@ client.on('ready', () => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
+  // !help
+  if (message.content === '!help') {
+    const embed = new EmbedBuilder()
+      .setColor('#2b2d31')
+      .setTitle('📋 AttendanceBot Commands')
+      .addFields(
+        {
+          name: '👤 Everyone',
+          value: '`!available` — mark yourself as available\n`!unavailable` — mark yourself as unavailable\n`!attendance` — show today\'s attendance list\n`!help` — show this message'
+        },
+        {
+          name: '🔒 Admin Only',
+          value: '`!scrim <time>` — set scrim time and ping everyone\n`!cancel` — cancel tonight\'s scrim\n`!clear` — clear attendance list\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet'
+        },
+        {
+          name: '⚙️ Auto Features',
+          value: '• Bot announces when all 5 players are available\n• Bot reminds everyone 30 mins before scrim\n• Attendance resets automatically at midnight'
+        }
+      )
+      .setFooter({ text: 'AttendanceBot' })
+      .setTimestamp();
+
+    await message.reply({ embeds: [embed] });
+  }
+
   // !available
-  if (message.content === '!available') {
+  else if (message.content === '!available') {
     attendance[message.author.id] = { name: message.author.username, status: 'available' };
     await message.reply(`✅ **${message.author.username}** is available for tonight's scrim!`);
     await checkFullAttendance(message);
@@ -89,7 +113,6 @@ client.on('messageCreate', async (message) => {
     await message.reply(`✅ Scrim set for **${time} tonight!** Players please mark your attendance!`);
     await message.channel.send('@everyone Please mark your attendance for tonight\'s scrim!');
 
-    // schedule reminder 30 mins before if time is parseable
     scheduleReminder(message, time);
   }
 
@@ -163,7 +186,7 @@ function scheduleReminder(message, time) {
 
     if (hour !== null && !scrimScheduled) {
       const reminderHour = hour === 0 ? 23 : hour - 1;
-      const reminderMin = hour === 0 ? 30 : 30;
+      const reminderMin = 30;
 
       cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
         const channel = message.guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
