@@ -50,11 +50,11 @@ client.on('messageCreate', async (message) => {
         },
         {
           name: '🔒 Admin Only',
-          value: '`!scrim <time>` — set scrim time and ping everyone\n`!cancel` — cancel tonight\'s scrim\n`!clear` — clear attendance list\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet'
+          value: '`!scrim <time>` — set scrim time. Example: `!scrim 8PM`\n`!cancel` — cancel tonight\'s scrim\n`!clear` — clear attendance list\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet'
         },
         {
           name: '⚙️ Auto Features',
-          value: '• Bot announces when all 5 players are available\n• Bot reminds everyone 30 mins before scrim\n• Attendance resets automatically at midnight'
+          value: '• Bot announces when all 5 players are available\n• Bot pings @everyone 3 mins before scrim\n• Bot pings @everyone when scrim starts\n• Attendance resets automatically at midnight'
         }
       )
       .setFooter({ text: 'AttendanceBot' })
@@ -106,12 +106,17 @@ client.on('messageCreate', async (message) => {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('You need to be an admin to use this command!');
     }
-    const time = message.content.slice(7).trim();
+
+    const time = message.content.slice(7).trim().toUpperCase();
     if (!time) return message.reply('Usage: `!scrim <time>` — example: `!scrim 8PM`');
 
+    if (!time.includes('AM') && !time.includes('PM')) {
+      return message.reply('❌ Invalid time format! Use AM/PM like `!scrim 8PM` or `!scrim 9:30PM`');
+    }
+
     scrimTime = time;
-    await message.reply(`✅ Scrim set for **${time} tonight!** Players please mark your attendance!`);
-    await message.channel.send('@everyone Please mark your attendance for tonight\'s scrim!');
+    scrimScheduled = false;
+    await message.reply(`✅ Scrim set for **${time} tonight!** Use \`!remind\` to notify players to mark attendance.`);
 
     scheduleReminder(message, time);
   }
@@ -144,7 +149,7 @@ client.on('messageCreate', async (message) => {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('You need to be an admin to use this command!');
     }
-    await message.channel.send(`@everyone Don't forget to mark your attendance for tonight's scrim${scrimTime ? ` at **${scrimTime}**` : ''}! Type \`!available\` or \`!unavailable\``);
+    await message.channel.send(`@everyone Please mark your attendance for tonight's scrim${scrimTime ? ` at **${scrimTime}**` : ''}! Type \`!available\` or \`!unavailable\``);
   }
 
   // !ping — admin only
@@ -171,34 +176,67 @@ async function checkFullAttendance(message) {
   }
 }
 
+function parseHour(time) {
+  try {
+    const clean = time.toUpperCase().trim();
+    let hour, minute = 0;
+
+    if (clean.includes(':')) {
+      const [h, m] = clean.replace('AM', '').replace('PM', '').split(':');
+      hour = parseInt(h);
+      minute = parseInt(m);
+    } else {
+      hour = parseInt(clean.replace('AM', '').replace('PM', ''));
+    }
+
+    if (clean.includes('PM') && hour !== 12) hour += 12;
+    if (clean.includes('AM') && hour === 12) hour = 0;
+
+    return { hour, minute };
+  } catch (e) {
+    return null;
+  }
+}
+
 function scheduleReminder(message, time) {
   try {
-    const cleanTime = time.toUpperCase().replace(' ', '');
-    let hour = null;
+    const parsed = parseHour(time);
+    if (!parsed || scrimScheduled) return;
 
-    if (cleanTime.includes('PM')) {
-      hour = parseInt(cleanTime.replace('PM', '').trim());
-      if (hour !== 12) hour += 12;
-    } else if (cleanTime.includes('AM')) {
-      hour = parseInt(cleanTime.replace('AM', '').trim());
-      if (hour === 12) hour = 0;
+    const { hour, minute } = parsed;
+
+    // 3 minutes before
+    let reminderMin = minute - 3;
+    let reminderHour = hour;
+    if (reminderMin < 0) {
+      reminderMin += 60;
+      reminderHour -= 1;
     }
 
-    if (hour !== null && !scrimScheduled) {
-      const reminderHour = hour === 0 ? 23 : hour - 1;
-      const reminderMin = 30;
-
-      cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
-        const channel = message.guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
+    // ping 3 mins before
+    cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
+      client.guilds.cache.forEach(async guild => {
+        const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
         if (channel) {
-          channel.send(`⏰ **30 minutes until scrim at ${time}!** Make sure you're ready!`);
+          channel.send(`⏰ @everyone **3 minutes until scrim at ${time}!** Get ready! 🎮`);
         }
       });
+    });
 
-      scrimScheduled = true;
-    }
+    // ping at scrim time
+    cron.schedule(`${minute} ${hour} * * *`, async () => {
+      client.guilds.cache.forEach(async guild => {
+        const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
+        if (channel) {
+          channel.send(`🎮 @everyone **Scrim is starting NOW!** GL HF! 🔥`);
+        }
+      });
+    });
+
+    scrimScheduled = true;
+    console.log(`Scrim reminders scheduled for ${time}`);
   } catch (e) {
-    console.log('Could not schedule reminder');
+    console.log('Could not schedule reminder:', e);
   }
 }
 
