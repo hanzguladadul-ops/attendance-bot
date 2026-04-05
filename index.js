@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ChannelType } = require('discord.js');
 const cron = require('node-cron');
 
 const client = new Client({
@@ -37,6 +37,32 @@ client.on('ready', () => {
   });
 });
 
+// when bot joins a server
+client.on('guildCreate', async (guild) => {
+  const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
+
+  // find a channel to send the welcome message
+  const defaultChannel = guild.channels.cache.find(c =>
+    c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has('SendMessages')
+  );
+
+  if (!channel) {
+    if (defaultChannel) {
+      defaultChannel.send(
+        `👋 Hey! Thanks for adding **AttendanceBot**!\n\n` +
+        `⚠️ To get started please create a text channel called exactly \`attendance\` (all lowercase).\n` +
+        `That's where all scrim attendance updates and reminders will be posted.\n\n` +
+        `Once that's done type \`!help\` in any channel to see all available commands!`
+      );
+    }
+  } else {
+    channel.send(
+      `👋 Hey! **AttendanceBot** is now online and ready to go!\n` +
+      `Type \`!help\` to see all available commands!`
+    );
+  }
+});
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
@@ -48,15 +74,19 @@ client.on('messageCreate', async (message) => {
       .addFields(
         {
           name: '👤 Everyone',
-          value: '`!available` — mark yourself as available\n`!unavailable` — mark yourself as unavailable\n`!attendance` — show today\'s attendance list\n`!help` — show this message'
+          value: '`!available` — mark yourself as available\n`!unavailable` — mark yourself as unavailable\n`!attendance` — show today\'s attendance list\n`!scrim <time> <team>` — set scrim time. Example: `!scrim 9:30PM Heiwa`\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet\n`!help` — show this message'
         },
         {
           name: '🔒 Admin Only',
-          value: '`!scrim <time> <team>` — set scrim time and team. Example: `!scrim 9:30PM Heiwa`\n`!cancel` — cancel tonight\'s scrim\n`!clear` — clear attendance list\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet'
+          value: '`!clear` — clear attendance list\n`!cancel` — cancel tonight\'s scrim'
         },
         {
           name: '⚙️ Auto Features',
           value: '• Bot announces when all 5 players are available\n• Bot pings @everyone 3 mins before scrim\n• Bot pings @everyone when scrim starts\n• Attendance resets automatically at midnight'
+        },
+        {
+          name: '⚠️ Setup Required',
+          value: 'Make sure your server has a text channel named exactly `attendance` for the bot to work properly!'
         }
       )
       .setFooter({ text: 'AttendanceBot' })
@@ -107,12 +137,8 @@ client.on('messageCreate', async (message) => {
     await message.reply({ embeds: [embed] });
   }
 
-  // !scrim <time> <team> — admin only
+  // !scrim <time> <team>
   else if (message.content.startsWith('!scrim')) {
-    if (!message.member.permissions.has('Administrator')) {
-      return message.reply('You need to be an admin to use this command!');
-    }
-
     const args = message.content.slice(7).trim().split(' ');
     const time = args[0] ? args[0].toUpperCase() : null;
     const team = args.slice(1).join(' ') || null;
@@ -157,20 +183,13 @@ client.on('messageCreate', async (message) => {
     await message.reply('✅ Attendance has been cleared!');
   }
 
-  // !remind — admin only
+  // !remind
   else if (message.content === '!remind') {
-    if (!message.member.permissions.has('Administrator')) {
-      return message.reply('You need to be an admin to use this command!');
-    }
     await message.channel.send(`@everyone Please mark your attendance for tonight's scrim${scrimTime ? ` at **${scrimTime}**` : ''}${scrimTeam ? ` for **${scrimTeam}**` : ''}! Type \`!available\` or \`!unavailable\``);
   }
 
-  // !ping — admin only
+  // !ping
   else if (message.content === '!ping') {
-    if (!message.member.permissions.has('Administrator')) {
-      return message.reply('You need to be an admin to use this command!');
-    }
-
     const responded = Object.keys(attendance);
     const members = await message.guild.members.fetch();
     const notResponded = members.filter(m => !m.user.bot && !responded.includes(m.user.id));
@@ -225,7 +244,6 @@ function scheduleReminder(message, time, team) {
       reminderHour -= 1;
     }
 
-    // 3 mins before
     cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
       client.guilds.cache.forEach(async guild => {
         const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
@@ -235,7 +253,6 @@ function scheduleReminder(message, time, team) {
       });
     });
 
-    // at scrim time
     cron.schedule(`${minute} ${hour} * * *`, async () => {
       client.guilds.cache.forEach(async guild => {
         const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
