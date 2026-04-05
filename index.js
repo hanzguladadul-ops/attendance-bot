@@ -19,6 +19,16 @@ let scrimGuild = null;
 let attendance = {};
 let scrimScheduled = false;
 
+function isAdminOrMod(member) {
+  return member.permissions.has('Administrator') ||
+    member.permissions.has('ManageGuild') ||
+    member.roles.cache.some(role =>
+      role.name.toLowerCase() === 'moderator' ||
+      role.name.toLowerCase() === 'mod' ||
+      role.name.toLowerCase() === 'manager'
+    );
+}
+
 client.on('ready', () => {
   console.log('AttendanceBot is online!');
 
@@ -39,7 +49,6 @@ client.on('ready', () => {
   });
 });
 
-// when bot joins a server
 client.on('guildCreate', async (guild) => {
   const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
 
@@ -78,7 +87,7 @@ client.on('messageCreate', async (message) => {
           value: '`!available` — mark yourself as available\n`!unavailable` — mark yourself as unavailable\n`!attendance` — show today\'s attendance list\n`!scrim <time> <team>` — set scrim time. Example: `!scrim 9:30PM Heiwa`\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet\n`!help` — show this message'
         },
         {
-          name: '🔒 Admin Only',
+          name: '🔒 Admin & Moderator Only',
           value: '`!clear` — clear attendance list\n`!cancel` — cancel tonight\'s scrim'
         },
         {
@@ -160,10 +169,10 @@ client.on('messageCreate', async (message) => {
     scheduleReminder(message.guild, time, team);
   }
 
-  // !cancel — admin only
+  // !cancel — admin & mod only
   else if (message.content === '!cancel') {
-    if (!message.member.permissions.has('Administrator')) {
-      return message.reply('You need to be an admin to use this command!');
+    if (!isAdminOrMod(message.member)) {
+      return message.reply('You need to be an admin or moderator to use this command!');
     }
     scrimTime = null;
     scrimTeam = null;
@@ -174,10 +183,10 @@ client.on('messageCreate', async (message) => {
     await message.channel.send('@everyone Tonight\'s scrim has been cancelled!');
   }
 
-  // !clear — admin only
+  // !clear — admin & mod only
   else if (message.content === '!clear') {
-    if (!message.member.permissions.has('Administrator')) {
-      return message.reply('You need to be an admin to use this command!');
+    if (!isAdminOrMod(message.member)) {
+      return message.reply('You need to be an admin or moderator to use this command!');
     }
     attendance = {};
     scrimTime = null;
@@ -248,7 +257,6 @@ function scheduleReminder(guild, time, team) {
       reminderHour -= 1;
     }
 
-    // 3 mins before
     cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
       const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
       if (channel) {
@@ -256,7 +264,6 @@ function scheduleReminder(guild, time, team) {
       }
     });
 
-    // at scrim time
     cron.schedule(`${minute} ${hour} * * *`, async () => {
       const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
       if (channel) {
