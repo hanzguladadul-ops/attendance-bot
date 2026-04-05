@@ -15,6 +15,7 @@ const ATTENDANCE_CHANNEL = 'attendance';
 
 let scrimTime = null;
 let scrimTeam = null;
+let scrimGuild = null;
 let attendance = {};
 let scrimScheduled = false;
 
@@ -25,6 +26,7 @@ client.on('ready', () => {
     attendance = {};
     scrimTime = null;
     scrimTeam = null;
+    scrimGuild = null;
     scrimScheduled = false;
     console.log('Attendance reset for the day');
 
@@ -41,7 +43,6 @@ client.on('ready', () => {
 client.on('guildCreate', async (guild) => {
   const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
 
-  // find a channel to send the welcome message
   const defaultChannel = guild.channels.cache.find(c =>
     c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has('SendMessages')
   );
@@ -151,11 +152,12 @@ client.on('messageCreate', async (message) => {
 
     scrimTime = time;
     scrimTeam = team;
+    scrimGuild = message.guild;
     scrimScheduled = false;
 
     await message.reply(`✅ Scrim set for **${time} tonight**${team ? ` for **${team}**` : ''}! Use \`!remind\` to notify players to mark attendance.`);
 
-    scheduleReminder(message, time, team);
+    scheduleReminder(message.guild, time, team);
   }
 
   // !cancel — admin only
@@ -165,6 +167,7 @@ client.on('messageCreate', async (message) => {
     }
     scrimTime = null;
     scrimTeam = null;
+    scrimGuild = null;
     scrimScheduled = false;
     attendance = {};
     await message.reply('❌ Tonight\'s scrim has been cancelled. Attendance has been cleared.');
@@ -179,6 +182,7 @@ client.on('messageCreate', async (message) => {
     attendance = {};
     scrimTime = null;
     scrimTeam = null;
+    scrimGuild = null;
     scrimScheduled = false;
     await message.reply('✅ Attendance has been cleared!');
   }
@@ -230,7 +234,7 @@ function parseHour(time) {
   }
 }
 
-function scheduleReminder(message, time, team) {
+function scheduleReminder(guild, time, team) {
   try {
     const parsed = parseHour(time);
     if (!parsed || scrimScheduled) return;
@@ -244,22 +248,20 @@ function scheduleReminder(message, time, team) {
       reminderHour -= 1;
     }
 
+    // 3 mins before
     cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
-      client.guilds.cache.forEach(async guild => {
-        const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-        if (channel) {
-          channel.send(`⏰ @everyone **3 minutes until scrim!**${team ? ` **${team}** get ready!` : ' Get ready!'} 🎮`);
-        }
-      });
+      const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
+      if (channel) {
+        channel.send(`⏰ @everyone **3 minutes until scrim!**${team ? ` **${team}** get ready!` : ' Get ready!'} 🎮`);
+      }
     });
 
+    // at scrim time
     cron.schedule(`${minute} ${hour} * * *`, async () => {
-      client.guilds.cache.forEach(async guild => {
-        const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-        if (channel) {
-          channel.send(`🎮 @everyone${team ? ` **${team}** scrim is starting NOW!` : ' Scrim is starting NOW!'} GL! 🔥`);
-        }
-      });
+      const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
+      if (channel) {
+        channel.send(`🎮 @everyone${team ? ` **${team}** scrim is starting NOW!` : ' Scrim is starting NOW!'} GL! 🔥`);
+      }
     });
 
     scrimScheduled = true;
