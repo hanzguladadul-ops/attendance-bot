@@ -25,7 +25,8 @@ function isAdminOrMod(member) {
     member.roles.cache.some(role =>
       role.name.toLowerCase() === 'moderator' ||
       role.name.toLowerCase() === 'mod' ||
-      role.name.toLowerCase() === 'manager'
+      role.name.toLowerCase() === 'manager' ||
+      role.name.toLowerCase() === 'staff'
     );
 }
 
