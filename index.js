@@ -203,16 +203,16 @@ client.on('messageCreate', async (message) => {
       return message.reply('You need to be an admin, moderator or staff to use this command!');
     }
 
-    const target = message.mentions.users.first();
+    const target = message.mentions.members.first();
     if (!target) return message.reply('Usage: `!remove @user` — example: `!remove @Hanz`');
 
     if (!attendance[target.id]) {
-      return message.reply(`**${target.username}** is not in the attendance list!`);
+      return message.reply(`**${target.user.username}** is not in the attendance list!`);
     }
 
     delete attendance[target.id];
-    await message.reply(`✅ **${target.username}** has been removed from the attendance list!`);
-  }
+    await message.reply(`✅ **${target.user.username}** has been removed from the attendance list!`);
+      }
 
   // !remind
   else if (message.content === '!remind') {
