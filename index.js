@@ -88,8 +88,8 @@ client.on('messageCreate', async (message) => {
           value: '`!available` — mark yourself as available\n`!unavailable` — mark yourself as unavailable\n`!attendance` — show today\'s attendance list\n`!scrim <time> <team>` — set scrim time. Example: `!scrim 9:30PM Heiwa`\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet\n`!help` — show this message'
         },
         {
-          name: '🔒 Admin & Moderator Only',
-          value: '`!clear` — clear attendance list\n`!cancel` — cancel tonight\'s scrim'
+          name: '🔒 Admin & Moderator & Staff Only',
+          value: '`!clear` — clear attendance list\n`!cancel` — cancel tonight\'s scrim\n`!remove @user` — remove a player from the attendance list'
         },
         {
           name: '⚙️ Auto Features',
@@ -170,10 +170,10 @@ client.on('messageCreate', async (message) => {
     scheduleReminder(message.guild, time, team);
   }
 
-  // !cancel — admin & mod only
+  // !cancel — admin & mod & staff only
   else if (message.content === '!cancel') {
     if (!isAdminOrMod(message.member)) {
-      return message.reply('You need to be an admin or moderator to use this command!');
+      return message.reply('You need to be an admin, moderator or staff to use this command!');
     }
     scrimTime = null;
     scrimTeam = null;
@@ -184,10 +184,10 @@ client.on('messageCreate', async (message) => {
     await message.channel.send('@everyone Tonight\'s scrim has been cancelled!');
   }
 
-  // !clear — admin & mod only
+  // !clear — admin & mod & staff only
   else if (message.content === '!clear') {
     if (!isAdminOrMod(message.member)) {
-      return message.reply('You need to be an admin or moderator to use this command!');
+      return message.reply('You need to be an admin, moderator or staff to use this command!');
     }
     attendance = {};
     scrimTime = null;
@@ -195,6 +195,23 @@ client.on('messageCreate', async (message) => {
     scrimGuild = null;
     scrimScheduled = false;
     await message.reply('✅ Attendance has been cleared!');
+  }
+
+  // !remove @user — admin & mod & staff only
+  else if (message.content.startsWith('!remove')) {
+    if (!isAdminOrMod(message.member)) {
+      return message.reply('You need to be an admin, moderator or staff to use this command!');
+    }
+
+    const target = message.mentions.users.first();
+    if (!target) return message.reply('Usage: `!remove @user` — example: `!remove @Hanz`');
+
+    if (!attendance[target.id]) {
+      return message.reply(`**${target.username}** is not in the attendance list!`);
+    }
+
+    delete attendance[target.id];
+    await message.reply(`✅ **${target.username}** has been removed from the attendance list!`);
   }
 
   // !remind
@@ -279,4 +296,4 @@ function scheduleReminder(guild, time, team) {
   }
 }
 
-client.login(process.env.TOKEN);
+client.login(process.env.TOKEN)
