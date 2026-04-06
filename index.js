@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require('discord.js');
 const cron = require('node-cron');
 
 const client = new Client({
@@ -14,21 +14,39 @@ const TEAM_SIZE = 5;
 const ATTENDANCE_CHANNEL = 'attendance';
 const BOT_OWNER_ID = '1292033694869225473';
 
-// Per‑guild data store
-const guildData = new Map(); // key: guildId, value: { scrimTime, scrimTeam, attendance, attendanceMessageId, reminder3minJob, reminderStartJob }
+// Per‑guild data: scrims stored by unique ID (e.g., "9PM_TeamA_1734567890")
+// Also store the last button message ID for cleanup
+const guildData = new Map(); // guildId -> { scrims: Map<scrimId, ScrimObject>, lastButtonMsgId: string|null }
 
-function getGuildData(guildId) {
-  if (!guildData.has(guildId)) {
-    guildData.set(guildId, {
-      scrimTime: null,
-      scrimTeam: null,
-      attendance: {},
-      attendanceMessageId: null,
-      reminder3minJob: null,
-      reminderStartJob: null
-    });
+class Scrim {
+  constructor(id, time, team, channelId, reminder3minJob, reminderStartJob, attendanceMsgId) {
+    this.id = id;                // unique string
+    this.time = time;            // e.g., "9PM"
+    this.team = team;            // e.g., "TeamA"
+    this.channelId = channelId;  // where attendance message lives
+    this.reminder3minJob = reminder3minJob;   // cron job
+    this.reminderStartJob = reminderStartJob; // cron job
+    this.attendanceMsgId = attendanceMsgId;   // message ID of the embed
+    this.attendance = {};        // userId -> { name, status }
   }
-  return guildData.get(guildId);
+}
+
+function getGuildScrims(guildId) {
+  if (!guildData.has(guildId)) {
+    guildData.set(guildId, { scrims: new Map(), lastButtonMsgId: null });
+  }
+  return guildData.get(guildId).scrims;
+}
+
+function setLastButtonMessage(guildId, msgId) {
+  if (!guildData.has(guildId)) {
+    guildData.set(guildId, { scrims: new Map(), lastButtonMsgId: null });
+  }
+  guildData.get(guildId).lastButtonMsgId = msgId;
+}
+
+function getLastButtonMessage(guildId) {
+  return guildData.get(guildId)?.lastButtonMsgId || null;
 }
 
 function isAdminOrMod(member) {
@@ -42,146 +60,14 @@ function isAdminOrMod(member) {
     );
 }
 
-async function sendAttendanceButtons(channel, data) {
-  const available = Object.values(data.attendance).filter(p => p.status === 'available');
-  const unavailable = Object.values(data.attendance).filter(p => p.status === 'unavailable');
-
-  const embed = new EmbedBuilder()
-    .setColor('#2b2d31')
-    .setTitle(`📋 Scrim Attendance${data.scrimTime ? ` — ${data.scrimTime}` : ''}`)
-    .addFields(
-      {
-        name: '🏷️ Team',
-        value: data.scrimTeam ? data.scrimTeam : 'Not set'
-      },
-      {
-        name: `✅ Available (${available.length}/${TEAM_SIZE})`,
-        value: available.length > 0 ? available.map(p => `• ${p.name}`).join('\n') : 'None yet'
-      },
-      {
-        name: `❌ Unavailable (${unavailable.length}/${TEAM_SIZE})`,
-        value: unavailable.length > 0 ? unavailable.map(p => `• ${p.name}`).join('\n') : 'None'
-      }
-    )
-    .setFooter({ text: `Scrim at ${data.scrimTime}${data.scrimTeam ? ` | ${data.scrimTeam}` : ''}` })
-    .setTimestamp();
-
-  const row = new ActionRowBuilder()
-    .addComponents(
-      new ButtonBuilder()
-        .setCustomId('available')
-        .setLabel('✅ Available')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId('unavailable')
-        .setLabel('❌ Unavailable')
-        .setStyle(ButtonStyle.Danger)
-    );
-
-  return await channel.send({ embeds: [embed], components: [row] });
-}
-
-async function updateAttendanceMessage(channel, data) {
-  if (!data.attendanceMessageId) return;
-
-  try {
-    const msg = await channel.messages.fetch(data.attendanceMessageId);
-    const available = Object.values(data.attendance).filter(p => p.status === 'available');
-    const unavailable = Object.values(data.attendance).filter(p => p.status === 'unavailable');
-
-    const embed = new EmbedBuilder()
-      .setColor('#2b2d31')
-      .setTitle(`📋 Scrim Attendance${data.scrimTime ? ` — ${data.scrimTime}` : ''}`)
-      .addFields(
-        {
-          name: '🏷️ Team',
-          value: data.scrimTeam ? data.scrimTeam : 'Not set'
-        },
-        {
-          name: `✅ Available (${available.length}/${TEAM_SIZE})`,
-          value: available.length > 0 ? available.map(p => `• ${p.name}`).join('\n') : 'None yet'
-        },
-        {
-          name: `❌ Unavailable (${unavailable.length}/${TEAM_SIZE})`,
-          value: unavailable.length > 0 ? unavailable.map(p => `• ${p.name}`).join('\n') : 'None'
-        }
-      )
-      .setFooter({ text: `Scrim at ${data.scrimTime}${data.scrimTeam ? ` | ${data.scrimTeam}` : ''}` })
-      .setTimestamp();
-
-    const row = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId('available')
-          .setLabel('✅ Available')
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId('unavailable')
-          .setLabel('❌ Unavailable')
-          .setStyle(ButtonStyle.Danger)
-      );
-
-    await msg.edit({ embeds: [embed], components: [row] });
-  } catch (e) {
-    console.log('Could not update attendance message:', e);
-  }
-}
-
-function cancelReminders(guildId) {
-  const data = getGuildData(guildId);
-  if (data.reminder3minJob) {
-    data.reminder3minJob.stop();
-    data.reminder3minJob = null;
-  }
-  if (data.reminderStartJob) {
-    data.reminderStartJob.stop();
-    data.reminderStartJob = null;
-  }
-}
-
-function scheduleReminders(guild, time, team) {
-  const guildId = guild.id;
-  const data = getGuildData(guildId);
-
-  // Cancel any existing reminders first
-  cancelReminders(guildId);
-
-  const parsed = parseHour(time);
-  if (!parsed) return false;
-
-  const { hour, minute } = parsed;
-
-  let reminderMin = minute - 3;
-  let reminderHour = hour;
-  if (reminderMin < 0) {
-    reminderMin += 60;
-    reminderHour -= 1;
-  }
-
-  // Schedule the 3‑minute reminder
-  data.reminder3minJob = cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
-    const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-    if (channel) {
-      channel.send(`⏰ @everyone **3 minutes until scrim!**${team ? ` **${team}** get ready!` : ' Get ready!'} 🎮`);
-    }
-  });
-
-  // Schedule the “scrim starting now” reminder
-  data.reminderStartJob = cron.schedule(`${minute} ${hour} * * *`, async () => {
-    const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-    if (channel) {
-      channel.send(`🎮 @everyone${team ? ` **${team}** scrim is starting NOW!` : ' Scrim is starting NOW!'} GL! 🔥`);
-    }
-  });
-
-  return true;
+function generateScrimId(time, team) {
+  return `${time}_${team}_${Date.now()}`;
 }
 
 function parseHour(time) {
   try {
     const clean = time.toUpperCase().trim();
     let hour, minute = 0;
-
     if (clean.includes(':')) {
       const [h, m] = clean.replace('AM', '').replace('PM', '').split(':');
       hour = parseInt(h);
@@ -189,285 +75,388 @@ function parseHour(time) {
     } else {
       hour = parseInt(clean.replace('AM', '').replace('PM', ''));
     }
-
     if (clean.includes('PM') && hour !== 12) hour += 12;
     if (clean.includes('AM') && hour === 12) hour = 0;
-
     return { hour, minute };
   } catch (e) {
     return null;
   }
 }
 
-client.on('ready', () => {
-  console.log('AttendanceBot is online!');
+async function sendAttendanceMessage(channel, scrim) {
+  const available = Object.values(scrim.attendance).filter(p => p.status === 'available');
+  const unavailable = Object.values(scrim.attendance).filter(p => p.status === 'unavailable');
 
-  // Daily reset at midnight
+  const embed = new EmbedBuilder()
+    .setColor('#2b2d31')
+    .setTitle(`📋 Scrim Attendance — ${scrim.time}`)
+    .addFields(
+      { name: '🏷️ Team', value: scrim.team, inline: true },
+      { name: '🆔 Scrim ID', value: scrim.id, inline: true },
+      { name: '\u200B', value: '\u200B' },
+      { name: `✅ Available (${available.length}/${TEAM_SIZE})`, value: available.length ? available.map(p => `• ${p.name}`).join('\n') : 'None yet' },
+      { name: `❌ Unavailable (${unavailable.length}/${TEAM_SIZE})`, value: unavailable.length ? unavailable.map(p => `• ${p.name}`).join('\n') : 'None' }
+    )
+    .setFooter({ text: `Scrim at ${scrim.time} | ${scrim.team}` })
+    .setTimestamp();
+
+  // Buttons that will trigger a select menu
+  const row = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId('mark_attendance')
+        .setLabel('✅ Mark Attendance')
+        .setStyle(ButtonStyle.Primary)
+    );
+
+  const msg = await channel.send({ embeds: [embed], components: [row] });
+  scrim.attendanceMsgId = msg.id;
+  return msg;
+}
+
+async function updateAttendanceMessage(channel, scrim) {
+  if (!scrim.attendanceMsgId) return;
+  try {
+    const msg = await channel.messages.fetch(scrim.attendanceMsgId);
+    const available = Object.values(scrim.attendance).filter(p => p.status === 'available');
+    const unavailable = Object.values(scrim.attendance).filter(p => p.status === 'unavailable');
+
+    const embed = new EmbedBuilder()
+      .setColor('#2b2d31')
+      .setTitle(`📋 Scrim Attendance — ${scrim.time}`)
+      .addFields(
+        { name: '🏷️ Team', value: scrim.team, inline: true },
+        { name: '🆔 Scrim ID', value: scrim.id, inline: true },
+        { name: '\u200B', value: '\u200B' },
+        { name: `✅ Available (${available.length}/${TEAM_SIZE})`, value: available.length ? available.map(p => `• ${p.name}`).join('\n') : 'None yet' },
+        { name: `❌ Unavailable (${unavailable.length}/${TEAM_SIZE})`, value: unavailable.length ? unavailable.map(p => `• ${p.name}`).join('\n') : 'None' }
+      )
+      .setFooter({ text: `Scrim at ${scrim.time} | ${scrim.team}` })
+      .setTimestamp();
+
+    await msg.edit({ embeds: [embed], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('mark_attendance').setLabel('✅ Mark Attendance').setStyle(ButtonStyle.Primary))] });
+  } catch (e) { console.log('Update error:', e); }
+}
+
+function cancelScrimReminders(scrim) {
+  if (scrim.reminder3minJob) { scrim.reminder3minJob.stop(); scrim.reminder3minJob = null; }
+  if (scrim.reminderStartJob) { scrim.reminderStartJob.stop(); scrim.reminderStartJob = null; }
+}
+
+function scheduleScrimReminders(guild, scrim) {
+  cancelScrimReminders(scrim); // ensure no double
+  const parsed = parseHour(scrim.time);
+  if (!parsed) return false;
+  const { hour, minute } = parsed;
+  let reminderMin = minute - 3;
+  let reminderHour = hour;
+  if (reminderMin < 0) { reminderMin += 60; reminderHour -= 1; }
+
+  scrim.reminder3minJob = cron.schedule(`${reminderMin} ${reminderHour} * * *`, async () => {
+    const channel = guild.channels.cache.get(scrim.channelId);
+    if (channel) channel.send(`⏰ @everyone **3 minutes until scrim (${scrim.team} at ${scrim.time})!** Get ready! 🎮`);
+  });
+
+  scrim.reminderStartJob = cron.schedule(`${minute} ${hour} * * *`, async () => {
+    const channel = guild.channels.cache.get(scrim.channelId);
+    if (channel) channel.send(`🎮 @everyone **${scrim.team} scrim at ${scrim.time} is starting NOW!** GL! 🔥`);
+  });
+  return true;
+}
+
+async function deleteScrimAttendanceMessage(guild, scrim) {
+  if (scrim.attendanceMsgId) {
+    try {
+      const channel = guild.channels.cache.get(scrim.channelId);
+      if (channel) {
+        const msg = await channel.messages.fetch(scrim.attendanceMsgId);
+        await msg.delete();
+      }
+    } catch (e) { /* ignore */ }
+  }
+}
+
+// ---------- Discord events ----------
+client.on('ready', () => {
+  console.log('Multi‑Scrim AttendanceBot online!');
+
+  // Daily reset: clear all scrims for all guilds at midnight
   cron.schedule('0 0 * * *', () => {
     for (const [guildId, data] of guildData.entries()) {
-      // Cancel any pending reminders for this guild
-      cancelReminders(guildId);
-      // Reset data
-      data.scrimTime = null;
-      data.scrimTeam = null;
-      data.attendance = {};
-      data.attendanceMessageId = null;
-      // Optionally notify the attendance channel
       const guild = client.guilds.cache.get(guildId);
-      if (guild) {
-        const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-        if (channel) {
-          channel.send('🔄 Attendance has been reset for today. See you at the next scrim!');
-        }
+      if (!guild) continue;
+      for (const scrim of data.scrims.values()) {
+        cancelScrimReminders(scrim);
+        deleteScrimAttendanceMessage(guild, scrim);
       }
+      data.scrims.clear();
+      data.lastButtonMsgId = null;
+      const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
+      if (channel) channel.send('🔄 All scrims have been reset for today.');
     }
-    console.log('Attendance reset for all guilds');
   });
 });
 
 client.on('guildCreate', async (guild) => {
   const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-  const defaultChannel = guild.channels.cache.find(c =>
-    c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has('SendMessages')
-  );
-
-  if (!channel) {
-    if (defaultChannel) {
-      defaultChannel.send(
-        `👋 Hey! Thanks for adding **AttendanceBot**!\n\n` +
-        `⚠️ To get started please create a text channel called exactly \`attendance\` (all lowercase).\n` +
-        `That's where all scrim attendance updates and reminders will be posted.\n\n` +
-        `Once that's done type \`!help\` in any channel to see all available commands!`
-      );
-    }
-  } else {
-    channel.send(
-      `👋 Hey! **AttendanceBot** is now online and ready to go!\n` +
-      `Type \`!help\` to see all available commands!`
-    );
-  }
+  const defaultChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has('SendMessages'));
+  const msg = !channel ? (defaultChannel ? `⚠️ Please create a text channel named \`${ATTENDANCE_CHANNEL}\`.` : '') : `👋 AttendanceBot is ready! Type \`!help\`.`;
+  if (msg && defaultChannel) defaultChannel.send(msg);
+  else if (msg && channel) channel.send(msg);
 });
 
+// Button interaction -> show select menu of active scrims
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
+  if (interaction.customId !== 'mark_attendance') return;
 
+  const guildId = interaction.guild.id;
+  const scrimsMap = getGuildScrims(guildId);
+  if (scrimsMap.size === 0) {
+    return interaction.reply({ content: '❌ No active scrims. Use `!scrim` to create one.', ephemeral: true });
+  }
+
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId('select_scrim')
+    .setPlaceholder('Choose which scrim you are responding to')
+    .addOptions(
+      Array.from(scrimsMap.values()).map(scrim => {
+        const availableCount = Object.values(scrim.attendance).filter(p => p.status === 'available').length;
+        return new StringSelectMenuOptionBuilder()
+          .setLabel(`${scrim.team} @ ${scrim.time}`)
+          .setDescription(`${availableCount}/${TEAM_SIZE} available`)
+          .setValue(scrim.id);
+      })
+    );
+
+  const row = new ActionRowBuilder().addComponents(selectMenu);
+  await interaction.reply({ content: 'Select a scrim:', components: [row], ephemeral: true });
+});
+
+// Handle select menu choice -> then ask available/unavailable
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isStringSelectMenu()) return;
+  if (interaction.customId !== 'select_scrim') return;
+
+  const scrimId = interaction.values[0];
+  const guildId = interaction.guild.id;
+  const scrimsMap = getGuildScrims(guildId);
+  const scrim = scrimsMap.get(scrimId);
+  if (!scrim) {
+    return interaction.update({ content: '❌ This scrim no longer exists.', components: [], ephemeral: true });
+  }
+
+  // Now ask available/unavailable via buttons
+  const row = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder().setCustomId(`avail_${scrimId}`).setLabel('✅ Available').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`unavail_${scrimId}`).setLabel('❌ Unavailable').setStyle(ButtonStyle.Danger)
+    );
+  await interaction.update({ content: `Mark attendance for **${scrim.team} at ${scrim.time}**:`, components: [row], ephemeral: true });
+});
+
+// Handle the available/unavailable buttons (with scrim ID)
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('avail_') && !interaction.customId.startsWith('unavail_')) return;
+
+  const scrimId = interaction.customId.slice(interaction.customId.indexOf('_') + 1);
+  const isAvailable = interaction.customId.startsWith('avail_');
   const userId = interaction.user.id;
   const username = interaction.user.username;
   const guildId = interaction.guild.id;
-  const data = getGuildData(guildId);
-
-  if (interaction.customId === 'available') {
-    data.attendance[userId] = { name: username, status: 'available' };
-    await interaction.reply({ content: `✅ **${username}** is available for tonight's scrim!`, ephemeral: true });
-
-    const channel = interaction.guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-    if (channel) {
-      await updateAttendanceMessage(channel, data);
-      const available = Object.values(data.attendance).filter(p => p.status === 'available');
-      if (available.length >= TEAM_SIZE) {
-        channel.send(`🎮 All ${TEAM_SIZE} players are available! **Scrim is on${data.scrimTime ? ` at ${data.scrimTime}` : ' tonight'}**${data.scrimTeam ? ` for **${data.scrimTeam}**` : ''}! Let's go! 🔥`);
-      }
-    }
+  const scrimsMap = getGuildScrims(guildId);
+  const scrim = scrimsMap.get(scrimId);
+  if (!scrim) {
+    return interaction.reply({ content: '❌ This scrim no longer exists.', ephemeral: true });
   }
-  else if (interaction.customId === 'unavailable') {
-    data.attendance[userId] = { name: username, status: 'unavailable' };
-    await interaction.reply({ content: `❌ **${username}** is unavailable for tonight's scrim!`, ephemeral: true });
 
-    const channel = interaction.guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-    if (channel) await updateAttendanceMessage(channel, data);
+  scrim.attendance[userId] = { name: username, status: isAvailable ? 'available' : 'unavailable' };
+  await interaction.reply({ content: `${isAvailable ? '✅' : '❌'} **${username}** marked as ${isAvailable ? 'available' : 'unavailable'} for **${scrim.team} at ${scrim.time}**.`, ephemeral: true });
+
+  const channel = interaction.guild.channels.cache.get(scrim.channelId);
+  if (channel) {
+    await updateAttendanceMessage(channel, scrim);
+    const available = Object.values(scrim.attendance).filter(p => p.status === 'available');
+    if (available.length >= TEAM_SIZE) {
+      channel.send(`🎮 **${scrim.team}** has ${TEAM_SIZE} players available! Scrim at ${scrim.time} is ON! 🔥`);
+    }
   }
 });
 
+// ---------- Command handling ----------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-
   const guildId = message.guild.id;
-  let data = getGuildData(guildId);
+  const scrimsMap = getGuildScrims(guildId);
+  const prefix = '!';
+
+  if (!message.content.startsWith(prefix)) return;
+  const args = message.content.slice(prefix.length).trim().split(/\s+/);
+  const cmd = args[0].toLowerCase();
 
   // !help
-  if (message.content === '!help') {
+  if (cmd === 'help') {
     const embed = new EmbedBuilder()
       .setColor('#2b2d31')
-      .setTitle('📋 AttendanceBot Commands')
+      .setTitle('📋 Multi‑Scrim Attendance Bot Commands')
       .addFields(
-        {
-          name: '👤 Everyone',
-          value: '`!attendance` — show today\'s attendance list\n`!scrim <time> <team>` — set scrim time. Example: `!scrim 9:30PM Heiwa`\n`!remind` — ping everyone to mark attendance\n`!ping` — ping players who haven\'t responded yet\n`!help` — show this message'
-        },
-        {
-          name: '🔒 Admin & Moderator & Staff Only',
-          value: '`!clear` — clear attendance list\n`!cancel` — cancel tonight\'s scrim\n`!remove @user` — remove a player from the attendance list'
-        },
-        {
-          name: '👑 Bot Owner Only',
-          value: '`!broadcast <message>` — send a message to all servers the bot is in'
-        },
-        {
-          name: '⚙️ Auto Features',
-          value: '• Players mark attendance via buttons when scrim is set\n• Bot announces when all 5 players are available\n• Bot pings @everyone 3 mins before scrim\n• Bot pings @everyone when scrim starts\n• Attendance resets automatically at midnight'
-        },
-        {
-          name: '⚠️ Setup Required',
-          value: 'Make sure your server has a text channel named exactly `attendance` for the bot to work properly!'
-        }
-      )
-      .setFooter({ text: 'AttendanceBot' })
-      .setTimestamp();
-
-    await message.reply({ embeds: [embed] });
-  }
-
-  // !attendance
-  else if (message.content === '!attendance') {
-    const available = Object.values(data.attendance).filter(p => p.status === 'available');
-    const unavailable = Object.values(data.attendance).filter(p => p.status === 'unavailable');
-
-    const embed = new EmbedBuilder()
-      .setColor('#2b2d31')
-      .setTitle(`📋 Scrim Attendance${data.scrimTime ? ` — ${data.scrimTime}` : ''}`)
-      .addFields(
-        {
-          name: '🏷️ Team',
-          value: data.scrimTeam ? data.scrimTeam : 'Not set'
-        },
-        {
-          name: `✅ Available (${available.length}/${TEAM_SIZE})`,
-          value: available.length > 0 ? available.map(p => `• ${p.name}`).join('\n') : 'None yet'
-        },
-        {
-          name: `❌ Unavailable (${unavailable.length}/${TEAM_SIZE})`,
-          value: unavailable.length > 0 ? unavailable.map(p => `• ${p.name}`).join('\n') : 'None'
-        }
-      )
-      .setTimestamp();
-
-    if (data.scrimTime) embed.setFooter({ text: `Scrim at ${data.scrimTime}${data.scrimTeam ? ` | ${data.scrimTeam}` : ''}` });
-
-    await message.reply({ embeds: [embed] });
+        { name: '👤 Everyone', value: '`!scrim <time> <team>` – create a scrim\n`!scrims` – list all active scrims\n`!attendance [scrimId]` – show attendance for a scrim (or all)\n`!remind [scrimId]` – ping @everyone for a scrim\n`!ping [scrimId]` – ping non‑responders\n`!help` – this message' },
+        { name: '🔒 Admin/Mod/Staff', value: '`!scrim cancel <scrimId>` – cancel a scrim\n`!scrim clear <scrimId>` – clear its attendance\n`!scrim remove <scrimId> @user` – remove a player' },
+        { name: '👑 Bot Owner', value: '`!broadcast <msg>` – send to all servers' }
+      );
+    return message.reply({ embeds: [embed] });
   }
 
   // !scrim <time> <team>
-  else if (message.content.startsWith('!scrim')) {
-    const args = message.content.slice(7).trim().split(' ');
-    const time = args[0] ? args[0].toUpperCase() : null;
-    const team = args.slice(1).join(' ') || null;
-
-    if (!time) return message.reply('Usage: `!scrim <time> <team>` — example: `!scrim 9:30PM Heiwa`');
-
-    if (!time.includes('AM') && !time.includes('PM')) {
-      return message.reply('❌ Invalid time format! Use AM/PM like `!scrim 8PM Heiwa` or `!scrim 9:30PM Lumiere`');
-    }
-
-    // Cancel any previous reminders and reset data for this guild
-    cancelReminders(guildId);
-    data.scrimTime = time;
-    data.scrimTeam = team;
-    data.attendance = {};
-    data.attendanceMessageId = null;
-
-    await message.reply(`✅ Scrim set for **${time} tonight**${team ? ` for **${team}**` : ''}!`);
+  if (cmd === 'scrim') {
+    if (args.length < 3) return message.reply('Usage: `!scrim 9PM TeamName`');
+    const time = args[1].toUpperCase();
+    const team = args.slice(2).join(' ');
+    if (!time.includes('AM') && !time.includes('PM')) return message.reply('Invalid time format. Use e.g., `9PM` or `9:30PM`');
 
     const channel = message.guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-    if (channel) {
-      const msg = await sendAttendanceButtons(channel, data);
-      data.attendanceMessageId = msg.id;
-    }
+    if (!channel) return message.reply(`❌ Could not find a #${ATTENDANCE_CHANNEL} channel.`);
 
-    scheduleReminders(message.guild, time, team);
+    const scrimId = generateScrimId(time, team);
+    const newScrim = new Scrim(scrimId, time, team, channel.id, null, null, null);
+    scrimsMap.set(scrimId, newScrim);
+    await sendAttendanceMessage(channel, newScrim);
+    scheduleScrimReminders(message.guild, newScrim);
+    await message.reply(`✅ Scrim created: **${team}** at **${time}** (ID: \`${scrimId}\`)`);
+    return;
   }
 
-  // !cancel — admin & mod & staff only
-  else if (message.content === '!cancel') {
-    if (!isAdminOrMod(message.member)) {
-      return message.reply('You need to be an admin, moderator or staff to use this command!');
-    }
-    // Cancel reminders and reset data
-    cancelReminders(guildId);
-    data.scrimTime = null;
-    data.scrimTeam = null;
-    data.attendance = {};
-    data.attendanceMessageId = null;
-
-    await message.reply('❌ Tonight\'s scrim has been cancelled. Attendance has been cleared.');
-    await message.channel.send('@everyone Tonight\'s scrim has been cancelled!');
+  // !scrims
+  if (cmd === 'scrims') {
+    if (scrimsMap.size === 0) return message.reply('No active scrims.');
+    const list = Array.from(scrimsMap.values()).map(s => {
+      const avail = Object.values(s.attendance).filter(p => p.status === 'available').length;
+      return `• **${s.team}** at ${s.time} – ${avail}/${TEAM_SIZE} available (ID: \`${s.id}\`)`;
+    }).join('\n');
+    return message.reply(`**Active scrims:**\n${list}`);
   }
 
-  // !clear — admin & mod & staff only
-  else if (message.content === '!clear') {
-    if (!isAdminOrMod(message.member)) {
-      return message.reply('You need to be an admin, moderator or staff to use this command!');
-    }
-    cancelReminders(guildId);
-    data.scrimTime = null;
-    data.scrimTeam = null;
-    data.attendance = {};
-    data.attendanceMessageId = null;
-
-    await message.reply('✅ Attendance has been cleared!');
+  // !scrim cancel <scrimId>
+  if (cmd === 'scrim' && args[1] === 'cancel') {
+    if (!isAdminOrMod(message.member)) return message.reply('❌ Admin/mod/staff only.');
+    const scrimId = args[2];
+    if (!scrimId) return message.reply('Usage: `!scrim cancel <scrimId>`');
+    const scrim = scrimsMap.get(scrimId);
+    if (!scrim) return message.reply('Scrim not found.');
+    cancelScrimReminders(scrim);
+    await deleteScrimAttendanceMessage(message.guild, scrim);
+    scrimsMap.delete(scrimId);
+    return message.reply(`❌ Scrim \`${scrimId}\` cancelled.`);
   }
 
-  // !remove @user — admin & mod & staff only
-  else if (message.content.startsWith('!remove')) {
-    if (!isAdminOrMod(message.member)) {
-      return message.reply('You need to be an admin, moderator or staff to use this command!');
-    }
+  // !scrim clear <scrimId>
+  if (cmd === 'scrim' && args[1] === 'clear') {
+    if (!isAdminOrMod(message.member)) return message.reply('❌ Admin/mod/staff only.');
+    const scrimId = args[2];
+    if (!scrimId) return message.reply('Usage: `!scrim clear <scrimId>`');
+    const scrim = scrimsMap.get(scrimId);
+    if (!scrim) return message.reply('Scrim not found.');
+    scrim.attendance = {};
+    const channel = message.guild.channels.cache.get(scrim.channelId);
+    if (channel) await updateAttendanceMessage(channel, scrim);
+    return message.reply(`✅ Attendance cleared for \`${scrimId}\`.`);
+  }
 
+  // !scrim remove <scrimId> @user
+  if (cmd === 'scrim' && args[1] === 'remove') {
+    if (!isAdminOrMod(message.member)) return message.reply('❌ Admin/mod/staff only.');
+    const scrimId = args[2];
     const target = message.mentions.members.first();
-    if (!target) return message.reply('Usage: `!remove @user` — example: `!remove @Hanz`');
+    if (!scrimId || !target) return message.reply('Usage: `!scrim remove <scrimId> @user`');
+    const scrim = scrimsMap.get(scrimId);
+    if (!scrim) return message.reply('Scrim not found.');
+    if (!scrim.attendance[target.id]) return message.reply('User not in attendance.');
+    delete scrim.attendance[target.id];
+    const channel = message.guild.channels.cache.get(scrim.channelId);
+    if (channel) await updateAttendanceMessage(channel, scrim);
+    return message.reply(`✅ Removed ${target.user.username} from \`${scrimId}\`.`);
+  }
 
-    if (!data.attendance[target.id]) {
-      return message.reply(`**${target.user.username}** is not in the attendance list!`);
+  // !attendance [scrimId]
+  if (cmd === 'attendance') {
+    const scrimId = args[1];
+    if (scrimId) {
+      const scrim = scrimsMap.get(scrimId);
+      if (!scrim) return message.reply('Scrim not found.');
+      const available = Object.values(scrim.attendance).filter(p => p.status === 'available');
+      const unavailable = Object.values(scrim.attendance).filter(p => p.status === 'unavailable');
+      const embed = new EmbedBuilder()
+        .setTitle(`📋 ${scrim.team} @ ${scrim.time}`)
+        .addFields(
+          { name: '✅ Available', value: available.length ? available.map(p => p.name).join('\n') : 'None', inline: true },
+          { name: '❌ Unavailable', value: unavailable.length ? unavailable.map(p => p.name).join('\n') : 'None', inline: true }
+        );
+      return message.reply({ embeds: [embed] });
+    } else {
+      if (scrimsMap.size === 0) return message.reply('No active scrims.');
+      let reply = '';
+      for (const scrim of scrimsMap.values()) {
+        const avail = Object.values(scrim.attendance).filter(p => p.status === 'available').length;
+        reply += `**${scrim.team}** at ${scrim.time}: ${avail}/${TEAM_SIZE} available\n`;
+      }
+      return message.reply(reply);
     }
-
-    delete data.attendance[target.id];
-    await message.reply(`✅ **${target.user.username}** has been removed from the attendance list!`);
-
-    const channel = message.guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
-    if (channel) await updateAttendanceMessage(channel, data);
   }
 
-  // !remind
-  else if (message.content === '!remind') {
-    await message.channel.send(`@everyone Please mark your attendance for tonight's scrim${data.scrimTime ? ` at **${data.scrimTime}**` : ''}${data.scrimTeam ? ` for **${data.scrimTeam}**` : ''}! Check the attendance message above and tap a button!`);
+  // !remind [scrimId]
+  if (cmd === 'remind') {
+    let scrimsToRemind = [];
+    if (args[1]) {
+      const scrim = scrimsMap.get(args[1]);
+      if (!scrim) return message.reply('Scrim not found.');
+      scrimsToRemind = [scrim];
+    } else {
+      scrimsToRemind = Array.from(scrimsMap.values());
+    }
+    if (scrimsToRemind.length === 0) return message.reply('No active scrims.');
+    for (const scrim of scrimsToRemind) {
+      await message.channel.send(`@everyone Please mark attendance for **${scrim.team} at ${scrim.time}** (ID: \`${scrim.id}\`) using the buttons!`);
+    }
+    return;
   }
 
-  // !ping
-  else if (message.content === '!ping') {
-    const responded = Object.keys(data.attendance);
+  // !ping [scrimId]
+  if (cmd === 'ping') {
+    let scrimsToPing = [];
+    if (args[1]) {
+      const scrim = scrimsMap.get(args[1]);
+      if (!scrim) return message.reply('Scrim not found.');
+      scrimsToPing = [scrim];
+    } else {
+      scrimsToPing = Array.from(scrimsMap.values());
+    }
+    if (scrimsToPing.length === 0) return message.reply('No active scrims.');
     const members = await message.guild.members.fetch();
-    const notResponded = members.filter(m => !m.user.bot && !responded.includes(m.user.id));
-
-    if (notResponded.size === 0) return message.reply('Everyone has already responded!');
-
-    const mentions = notResponded.map(m => `<@${m.user.id}>`).join(' ');
-    await message.channel.send(`⚠️ ${mentions} please mark your attendance! Tap the buttons in the attendance message!`);
+    for (const scrim of scrimsToPing) {
+      const responded = Object.keys(scrim.attendance);
+      const notResponded = members.filter(m => !m.user.bot && !responded.includes(m.user.id));
+      if (notResponded.size === 0) continue;
+      const mentions = notResponded.map(m => `<@${m.user.id}>`).join(' ');
+      await message.channel.send(`⚠️ **${scrim.team} @ ${scrim.time}** – ${mentions} please mark attendance!`);
+    }
+    return;
   }
 
-  // !broadcast — bot owner only
-  else if (message.content.startsWith('!broadcast')) {
-    if (message.author.id !== BOT_OWNER_ID) {
-      return message.reply('Only the bot owner can use this command!');
-    }
-
+  // !broadcast (owner only)
+  if (cmd === 'broadcast') {
+    if (message.author.id !== BOT_OWNER_ID) return message.reply('Only bot owner.');
     const announcement = message.content.slice(11).trim();
-    if (!announcement) return message.reply('Usage: `!broadcast <message>` — example: `!broadcast Scrims moving to 9PM!`');
-
-    let successCount = 0;
-    let failCount = 0;
-
+    if (!announcement) return message.reply('Usage: `!broadcast <msg>`');
+    let success = 0, fail = 0;
     for (const guild of client.guilds.cache.values()) {
       const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
       if (channel) {
-        try {
-          await channel.send(`📢 **Announcement**\n${announcement}`);
-          successCount++;
-        } catch (e) {
-          failCount++;
-        }
+        try { await channel.send(`📢 **Announcement**\n${announcement}`); success++; }
+        catch { fail++; }
       }
     }
-
-    await message.reply(`✅ Broadcast sent to **${successCount}** servers!${failCount > 0 ? ` Failed in ${failCount} servers.` : ''}`);
+    return message.reply(`✅ Sent to ${success} servers. Failed: ${fail}`);
   }
 });
 
