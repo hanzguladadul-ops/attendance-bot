@@ -12,6 +12,7 @@ const client = new Client({
 
 const TEAM_SIZE = 5;
 const ATTENDANCE_CHANNEL = 'attendance';
+const BOT_OWNER_ID = '1292033694869225473';
 
 let scrimTime = null;
 let scrimTeam = null;
@@ -90,6 +91,10 @@ client.on('messageCreate', async (message) => {
         {
           name: '🔒 Admin & Moderator & Staff Only',
           value: '`!clear` — clear attendance list\n`!cancel` — cancel tonight\'s scrim\n`!remove @user` — remove a player from the attendance list'
+        },
+        {
+          name: '👑 Bot Owner Only',
+          value: '`!broadcast <message>` — send a message to all servers the bot is in'
         },
         {
           name: '⚙️ Auto Features',
@@ -212,7 +217,7 @@ client.on('messageCreate', async (message) => {
 
     delete attendance[target.id];
     await message.reply(`✅ **${target.user.username}** has been removed from the attendance list!`);
-      }
+  }
 
   // !remind
   else if (message.content === '!remind') {
@@ -229,6 +234,33 @@ client.on('messageCreate', async (message) => {
 
     const mentions = notResponded.map(m => `<@${m.user.id}>`).join(' ');
     await message.channel.send(`⚠️ ${mentions} please mark your attendance! Type \`!available\` or \`!unavailable\``);
+  }
+
+  // !broadcast — bot owner only
+  else if (message.content.startsWith('!broadcast')) {
+    if (message.author.id !== BOT_OWNER_ID) {
+      return message.reply('Only the bot owner can use this command!');
+    }
+
+    const announcement = message.content.slice(11).trim();
+    if (!announcement) return message.reply('Usage: `!broadcast <message>` — example: `!broadcast Scrims moving to 9PM!`');
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const guild of client.guilds.cache.values()) {
+      const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
+      if (channel) {
+        try {
+          await channel.send(`📢 **Announcement**\n${announcement}`);
+          successCount++;
+        } catch (e) {
+          failCount++;
+        }
+      }
+    }
+
+    await message.reply(`✅ Broadcast sent to **${successCount}** servers!${failCount > 0 ? ` Failed in ${failCount} servers.` : ''}`);
   }
 });
 
@@ -296,4 +328,4 @@ function scheduleReminder(guild, time, team) {
   }
 }
 
-client.login(process.env.TOKEN)
+client.login(process.env.TOKEN);
