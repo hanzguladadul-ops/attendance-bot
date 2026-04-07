@@ -1,3 +1,4 @@
+```javascript
 const { Client, GatewayIntentBits, EmbedBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require('discord.js');
 const cron = require('node-cron');
 
@@ -457,4 +458,18 @@ client.on('messageCreate', async (message) => {
     const announcement = message.content.slice(11).trim();
     if (!announcement) return message.reply('Usage: `!broadcast <message>`');
     let success = 0, fail = 0;
-    for (const gui
+    for (const guild of client.guilds.cache.values()) {
+      const channel = guild.channels.cache.find(c => c.name === ATTENDANCE_CHANNEL);
+      if (channel) {
+        try {
+          await channel.send(`📢 **Announcement**\n${announcement}`);
+          success++;
+        } catch (e) { fail++; }
+      }
+    }
+    return message.reply(`✅ Broadcast sent to ${success} servers. Failed: ${fail}`);
+  }
+});
+
+client.login(process.env.TOKEN);
+```
