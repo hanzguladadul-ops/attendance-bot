@@ -512,4 +512,25 @@ client.on('messageCreate', async function(message) {
 
   // ── !broadcast (owner only) ──
   if (cmd === 'broadcast') {
-    if (mess
+    if (message.author.id !== BOT_OWNER_ID) return message.reply('❌ Only the bot owner can use this.');
+    var announcement = args.slice(1).join(' ');
+    if (!announcement) return message.reply('Usage: `!broadcast <message>`');
+    var success = 0;
+    var fail = 0;
+    for (var guild of client.guilds.cache.values()) {
+      var ch = guild.channels.cache.find(function(c) { return c.name === ATTENDANCE_CHANNEL; });
+      if (!ch) continue;
+      try {
+        await ch.send('📢 **Announcement**\n' + announcement);
+        success++;
+      } catch (e) {
+        fail++;
+      }
+    }
+    var failMsg = fail > 0 ? ' Failed in ' + fail + '.' : '';
+    return message.reply('✅ Broadcast sent to **' + success + '** server(s).' + failMsg);
+  }
+});
+
+// ─── Login ────────────────────────────────────────────────────
+client.login(process.env.TOKEN)
